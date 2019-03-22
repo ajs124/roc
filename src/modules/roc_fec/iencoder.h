@@ -26,6 +26,9 @@ public:
     //! Get buffer alignment requirement.
     virtual size_t alignment() const = 0;
 
+    //! Set number of source packets and repair packets for current block.
+    virtual bool begin(size_t sblen, size_t rblen) = 0;
+
     //! Store source or repair packet buffer for current block.
     virtual void set(size_t index, const core::Slice<uint8_t>& buffer) = 0;
 
@@ -33,7 +36,7 @@ public:
     virtual void commit() = 0;
 
     //! Reset current block.
-    virtual void reset() = 0;
+    virtual void end() = 0;
 };
 
 } // namespace fec

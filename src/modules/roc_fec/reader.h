@@ -65,6 +65,8 @@ private:
     packet::PacketPtr read_();
     packet::PacketPtr get_next_packet_();
 
+    void resize_(size_t sblen);
+
     void next_block_();
     void try_repair_();
     bool check_packet_(const packet::PacketPtr&);

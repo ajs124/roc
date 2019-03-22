@@ -23,8 +23,9 @@ Writer::Writer(const Config& config,
                packet::PacketPool& packet_pool,
                core::BufferPool<uint8_t>& buffer_pool,
                core::IAllocator& allocator)
-    : n_source_packets_(config.n_source_packets)
-    , n_repair_packets_(config.n_repair_packets)
+    : cur_sblen_(config.n_source_packets)
+    , next_sblen_(config.n_source_packets)
+    , cur_rblen_(config.n_repair_packets)
     , payload_size_(payload_size)
     , encoder_(encoder)
     , writer_(writer)
@@ -42,6 +43,7 @@ Writer::Writer(const Config& config,
     if (!repair_packets_.resize(config.n_repair_packets)) {
         return;
     }
+
     valid_ = true;
 }
 
@@ -76,35 +78,55 @@ void Writer::write(const packet::PacketPtr& pp) {
     }
     writer_.write(pp);
 
+    if (!encoder_.begin(cur_sblen_, cur_rblen_)) {
+        roc_log(LogError, "fec writer: can't begin encoding");
+        return;
+    }
     encoder_.set(cur_packet_, pp->fec()->payload);
+
     cur_packet_++;
 
-    if (cur_packet_ == n_source_packets_) {
+    if (cur_packet_ == cur_sblen_) {
         handle_next_block_();
 
-        cur_block_repair_sn_ += n_repair_packets_;
+        cur_block_repair_sn_ += cur_rblen_;
         cur_sbn_++;
 
         cur_packet_ = 0;
+        cur_sblen_ = next_sblen_;
+
+        encoder_.end();
     }
+}
+
+void Writer::resize(size_t sblen) {
+    roc_log(LogDebug, "fec writer: update sblen, cur=%lu next=%lu",
+            (unsigned long)cur_sblen_, (unsigned long)sblen);
+
+    next_sblen_ = sblen;
 }
 
 void Writer::handle_next_block_() {
     roc_log(LogTrace, "fec writer: next block: sbn=%lu", (unsigned long)cur_sbn_);
 
-    for (packet::seqnum_t i = 0; i < n_repair_packets_; i++) {
+    if (!encoder_.begin(cur_sblen_, cur_rblen_)) {
+        roc_log(LogError, "fec writer: can't begin encoding");
+        return;
+    }
+
+    for (packet::seqnum_t i = 0; i < cur_rblen_; i++) {
         packet::PacketPtr rp = make_repair_packet_(i);
         if (!rp) {
             roc_log(LogDebug, "fec writer: can't create repair packet");
             continue;
         }
         repair_packets_[i] = rp;
-        encoder_.set(n_source_packets_ + i, rp->fec()->payload);
+        encoder_.set(cur_sblen_ + i, rp->fec()->payload);
     }
 
     encoder_.commit();
 
-    for (packet::seqnum_t i = 0; i < n_repair_packets_; i++) {
+    for (packet::seqnum_t i = 0; i < cur_rblen_; i++) {
         packet::PacketPtr rp = repair_packets_[i];
         if (rp) {
             writer_.write(repair_packets_[i]);
@@ -112,7 +134,7 @@ void Writer::handle_next_block_() {
         }
     }
 
-    encoder_.reset();
+    encoder_.end();
 }
 
 packet::PacketPtr Writer::make_repair_packet_(packet::seqnum_t pack_n) {
@@ -149,7 +171,7 @@ packet::PacketPtr Writer::make_repair_packet_(packet::seqnum_t pack_n) {
     packet->set_data(data);
 
     fill_packet_rtp_fields_(packet, cur_block_repair_sn_ + pack_n);
-    fill_packet_fec_fields_(packet, (packet::seqnum_t)n_source_packets_ + pack_n);
+    fill_packet_fec_fields_(packet, (packet::seqnum_t)cur_sblen_ + pack_n);
 
     return packet;
 }
@@ -167,7 +189,7 @@ void Writer::fill_packet_fec_fields_(const packet::PacketPtr& packet,
     packet::FEC& fec = *packet->fec();
 
     fec.source_block_number = cur_sbn_;
-    fec.source_block_length = n_source_packets_;
+    fec.source_block_length = cur_sblen_;
     fec.encoding_symbol_id = pack_n;
 }
 

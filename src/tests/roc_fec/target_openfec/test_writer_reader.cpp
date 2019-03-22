@@ -11,6 +11,8 @@
 
 #include "roc_core/buffer_pool.h"
 #include "roc_core/heap_allocator.h"
+#include "roc_core/helpers.h"
+#include "roc_core/random.h"
 #include "roc_core/unique_ptr.h"
 #include "roc_fec/composer.h"
 #include "roc_fec/headers.h"
@@ -789,8 +791,8 @@ TEST(writer_reader, drop_outdated_block) {
     Writer writer(config, FECPayloadSize, encoder, dispatcher, source_composer,
                   repair_composer, packet_pool, buffer_pool, allocator);
 
-    Reader reader(config, decoder, dispatcher.source_reader(),
-                  dispatcher.repair_reader(), rtp_parser, packet_pool, allocator);
+    Reader reader(config, decoder, dispatcher.source_reader(), dispatcher.repair_reader(),
+                  rtp_parser, packet_pool, allocator);
 
     CHECK(writer.valid());
     CHECK(reader.valid());
@@ -849,8 +851,8 @@ TEST(writer_reader, repaired_block_numbering) {
     Writer writer(config, FECPayloadSize, encoder, dispatcher, source_composer,
                   repair_composer, packet_pool, buffer_pool, allocator);
 
-    Reader reader(config, decoder, dispatcher.source_reader(),
-                  dispatcher.repair_reader(), rtp_parser, packet_pool, allocator);
+    Reader reader(config, decoder, dispatcher.source_reader(), dispatcher.repair_reader(),
+                  rtp_parser, packet_pool, allocator);
 
     CHECK(writer.valid());
     CHECK(reader.valid());
@@ -899,6 +901,159 @@ TEST(writer_reader, repaired_block_numbering) {
         CHECK(p);
 
         CHECK(p->fec()->source_block_number == sbn + 1);
+    }
+}
+
+TEST(writer_reader, dynamic_souce_block_increase_decrease) {
+    OFEncoder encoder(config, FECPayloadSize, allocator);
+    OFDecoder decoder(config, FECPayloadSize, buffer_pool, allocator);
+
+    CHECK(decoder.valid());
+    CHECK(encoder.valid());
+
+    PacketDispatcher dispatcher;
+
+    Reader reader(config, decoder, dispatcher.source_reader(), dispatcher.repair_reader(),
+                  rtp_parser, packet_pool, allocator);
+    Writer writer(config, FECPayloadSize, encoder, dispatcher, source_composer,
+                  repair_composer, packet_pool, buffer_pool, allocator);
+
+    CHECK(reader.valid());
+    CHECK(writer.valid());
+
+    const size_t block_sizes[] = { 20, 25, 35, 43, 33, 23, 13 };
+    CHECK(block_sizes[0] == NumSourcePackets);
+
+    packet::seqnum_t pack_n = 0;
+
+    for (size_t n = 0; n < ROC_ARRAY_SIZE(block_sizes) - 1; ++n) {
+        writer.resize(block_sizes[n + 1]);
+
+        core::Array<packet::PacketPtr> packets(allocator);
+        packets.resize(block_sizes[n]);
+
+        for (size_t i = 0; i < block_sizes[n]; ++i) {
+            packets[i] = fill_one_packet(pack_n);
+            pack_n++;
+        }
+        for (size_t i = 0; i < block_sizes[n]; ++i) {
+            writer.write(packets[i]);
+        }
+
+        dispatcher.release_all();
+
+        for (size_t i = 0; i < block_sizes[n]; ++i) {
+            const packet::PacketPtr p = reader.read();
+
+            CHECK(p);
+            CHECK(p->fec());
+            CHECK(p->fec()->source_block_length == block_sizes[n]);
+        }
+    }
+}
+
+TEST(writer_reader, dynamic_souce_block_random) {
+    OFEncoder encoder(config, FECPayloadSize, allocator);
+    OFDecoder decoder(config, FECPayloadSize, buffer_pool, allocator);
+
+    CHECK(decoder.valid());
+    CHECK(encoder.valid());
+
+    PacketDispatcher dispatcher;
+
+    Reader reader(config, decoder, dispatcher.source_reader(), dispatcher.repair_reader(),
+                  rtp_parser, packet_pool, allocator);
+    Writer writer(config, FECPayloadSize, encoder, dispatcher, source_composer,
+                  repair_composer, packet_pool, buffer_pool, allocator);
+
+    CHECK(reader.valid());
+    CHECK(writer.valid());
+
+    core::Array<packet::PacketPtr> packets(allocator);
+
+    packet::seqnum_t pack_n = 0;
+
+    // Prepare first block.
+    packets.resize(NumSourcePackets);
+    for (size_t i = 0; i < NumSourcePackets; ++i) {
+        packets[i] = fill_one_packet(pack_n);
+        pack_n++;
+    }
+
+    // Write first half of the first block.
+    for (size_t i = 0; i < NumSourcePackets / 2; ++i) {
+        writer.write(packets[i]);
+    }
+
+    // Increase block size.
+    writer.resize(NumSourcePackets * 2);
+
+    // Write second half of the first block.
+    for (size_t i = NumSourcePackets / 2; i < NumSourcePackets; ++i) {
+        writer.write(packets[i]);
+    }
+
+    dispatcher.release_all();
+
+    // Read first block.
+    for (size_t i = 0; i < NumSourcePackets; ++i) {
+        const packet::PacketPtr p = reader.read();
+
+        CHECK(p);
+        CHECK(p->fec());
+        CHECK(p->fec()->source_block_length == NumSourcePackets);
+    }
+
+    // Prepare second block.
+    packets.resize(NumSourcePackets * 2);
+    for (size_t i = 0; i < NumSourcePackets * 2; ++i) {
+        packets[i] = fill_one_packet(pack_n);
+        pack_n++;
+    }
+
+    // Write first half of second block.
+    for (size_t i = 0; i < NumSourcePackets; ++i) {
+        writer.write(packets[i]);
+    }
+
+    // Decrease block size.
+    writer.resize(NumSourcePackets / 2);
+
+    // Write second half of second block
+    for (size_t i = NumSourcePackets; i < NumSourcePackets * 2; ++i) {
+        writer.write(packets[i]);
+    }
+
+    dispatcher.release_all();
+
+    // Read second block.
+    for (size_t i = 0; i < NumSourcePackets * 2; ++i) {
+        const packet::PacketPtr p = reader.read();
+
+        CHECK(p);
+        CHECK(p->fec());
+        CHECK(p->fec()->source_block_length == (2 * NumSourcePackets));
+    }
+
+    // Prepare and write third block.
+    packets.resize(NumSourcePackets / 2);
+    for (size_t i = 0; i < NumSourcePackets / 2; ++i) {
+        packets[i] = fill_one_packet(pack_n);
+        pack_n++;
+    }
+    for (size_t i = 0; i < NumSourcePackets / 2; ++i) {
+        writer.write(packets[i]);
+    }
+
+    dispatcher.release_all();
+
+    // Read third block.
+    for (size_t i = 0; i < NumSourcePackets / 2; ++i) {
+        const packet::PacketPtr p = reader.read();
+
+        CHECK(p);
+        CHECK(p->fec());
+        CHECK(p->fec()->source_block_length == (NumSourcePackets / 2));
     }
 }
 

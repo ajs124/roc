@@ -52,6 +52,9 @@ public:
     //! Get buffer alignment requirement.
     virtual size_t alignment() const;
 
+    //! Set number of source packets and repair packets for current block.
+    virtual bool begin(size_t sblen, size_t rblen);
+
     //! Store packet data for current block.
     virtual void set(size_t index, const core::Slice<uint8_t>& buffer);
 
@@ -59,13 +62,18 @@ public:
     virtual void commit();
 
     //! Reset current block.
-    virtual void reset();
+    virtual void end();
 
 private:
+    void reset_tabs_();
+    bool resize_tabs_(size_t size);
+
+    void reset_session_();
+
     enum { Alignment = 8 };
 
-    const size_t blk_source_packets_;
-    const size_t blk_repair_packets_;
+    size_t sblen_;
+    size_t rblen_;
 
     of_session_t* of_sess_;
     of_parameters_t* of_sess_params_;
